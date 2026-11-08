@@ -10,9 +10,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Get-ComssDns.ps1')
 . (Join-Path $PSScriptRoot 'Measure-DnsProviders.ps1')
 $backupPath = Join-Path $PSScriptRoot 'geohide-dns-backup.json'
-$template = 'https://eu.geohide.ru/dns-query'
-$addresses = @('5.175.161.3', '37.221.93.141')
-$taskName = 'Comss DNS - every 2 hours'
+$template = $geoHideDohUrl
 
 function Set-AdapterDns([string[]]$Addresses) {
     $dns | Set-DnsClientServerAddress -ServerAddresses $Addresses
@@ -42,7 +40,7 @@ try {
     $interactive = -not $Choice
     if ($interactive) {
         Write-Host '1. Switch to GeoHide EU (DoH)'
-        Write-Host '2. Restore previous DNS and Comss task'
+        Write-Host '2. Restore previous DNS and auto-update'
         Write-Host '3. Test Comss and GeoHide EU and apply the winner'
         Write-Host '4. Connect to Comss'
         $selection = Read-Host 'Choose 1, 2, 3 or 4'
@@ -81,15 +79,17 @@ try {
             $page = Get-ComssDnsPage
             $addresses = @(Get-ComssDnsFromHtml -Html $page.Content)
             $template = $comssDohUrl
+        } else {
+            $addresses = @(Get-GeoHideDnsAddresses -Preferred $dns.ServerAddresses)
         }
-        $task = Get-ScheduledTask -TaskPath '\' | Where-Object TaskName -eq $taskName
-        if ($task.State -eq 'Running') { throw 'Comss is updating now. Try again once it finishes.' }
+        $tasks = @(Get-DnsAutoUpdateTasks)
+        if ($tasks.State -contains 'Running') { throw 'An update is running. Try again once it finishes.' }
         if (-not $hasBackup) {
             $configured = (Get-ItemProperty -LiteralPath $key).NameServer
             $backup = [pscustomobject]@{
                 InterfaceGuid = [string]$adapter.InterfaceGuid
                 Addresses = @(([string]$configured -split '[,\s]+') | Where-Object { $_ })
-                TaskEnabled = [bool]($task -and $task.Settings.Enabled)
+                EnabledTasks = @($tasks | Where-Object { $_.Settings.Enabled } | Select-Object -ExpandProperty TaskName)
             }
         }
         $entries = @(Get-DnsClientDohServerAddress)
@@ -112,6 +112,7 @@ try {
                 InterfaceGuid = $backup.InterfaceGuid
                 Addresses = $backup.Addresses
                 TaskEnabled = $backup.TaskEnabled
+                EnabledTasks = $backup.EnabledTasks
                 AddedDohEntries = $addedDoh
             }
             $pendingBackup = "$backupPath.tmp"
@@ -119,7 +120,7 @@ try {
             if ($hasBackup) { [IO.File]::Replace($pendingBackup, $backupPath, [NullString]::Value) }
             else { [IO.File]::Move($pendingBackup, $backupPath) }
         }
-        if ($task.Settings.Enabled) { $task | Disable-ScheduledTask | Out-Null }
+        $tasks | Where-Object { $_.Settings.Enabled } | Disable-ScheduledTask | Out-Null
         foreach ($ip in $newEntries) {
             Add-DnsClientDohServerAddress -ServerAddress $ip -DohTemplate $template -AutoUpgrade $true -AllowFallbackToUdp $false
         }
@@ -127,6 +128,12 @@ try {
         Write-Host 'DNS applied. Use Restore in the menu to undo the changes.'
     } else {
         if (-not $hasBackup) { throw 'There is no saved DNS setup to restore.' }
+        $tasks = @(Get-DnsAutoUpdateTasks)
+        if ($tasks.State -contains 'Running') { throw 'An update is running. Try again once it finishes.' }
+        $enabledTasks = @($backup.EnabledTasks | Where-Object { $_ -in $dnsTaskNames.Values })
+        if ($backup.TaskEnabled) { $enabledTasks += $dnsTaskNames.Comss }
+        $tasks | Where-Object { $_.Settings.Enabled -and $_.TaskName -notin $enabledTasks } |
+            Disable-ScheduledTask | Out-Null
         if ($backup.Addresses) {
             Set-AdapterDns $backup.Addresses
         } else {
@@ -143,13 +150,13 @@ try {
                 Remove-DnsClientDohServerAddress -ServerAddress $registration.Address
             }
         }
-        if ($backup.TaskEnabled) {
-            $task = Get-ScheduledTask -TaskPath '\' | Where-Object TaskName -eq $taskName
-            if (-not $task) { throw 'DNS restored, but the saved Comss task is missing.' }
-            $task | Enable-ScheduledTask | Out-Null
+        foreach ($taskName in $enabledTasks) {
+            $task = $tasks | Where-Object TaskName -eq $taskName
+            if (-not $task) { throw "DNS restored, but the saved task '$taskName' is missing." }
+            if (-not $task.Settings.Enabled) { $task | Enable-ScheduledTask | Out-Null }
         }
         Remove-Item -LiteralPath $backupPath
-        Write-Host 'Previous DNS and Comss task state restored.'
+        Write-Host 'Previous DNS and auto-update state restored.'
     }
 } catch {
     Write-Host $_.Exception.Message -ForegroundColor Red

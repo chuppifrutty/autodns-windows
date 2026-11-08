@@ -2,6 +2,7 @@
 [CmdletBinding()]
 param(
     [string]$InterfaceAlias = 'Ethernet',
+    [ValidateSet('Comss','GeoHide')][string]$Provider = 'Comss',
     [switch]$CheckOnly,
     [string]$LogPath
 )
@@ -27,21 +28,27 @@ try {
     if (@($adapter).Count -ne 1 -or $adapter.Name -ne $InterfaceAlias) {
         throw 'Specify one exact network adapter name.'
     }
-    $response = Get-ComssDnsPage
-    $desired = @(Get-ComssDnsFromHtml -Html $response.Content)
     $dns = Get-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4
     $previous = @($dns.ServerAddresses)
+    if ($Provider -eq 'GeoHide') {
+        $template = $geoHideDohUrl
+        $desired = @(Get-GeoHideDnsAddresses -Preferred $previous)
+    } else {
+        $template = $comssDohUrl
+        $response = Get-ComssDnsPage
+        $desired = @(Get-ComssDnsFromHtml -Html $response.Content)
+    }
     $different = ($previous -join ',') -ne ($desired -join ',')
-    Write-Log "Adapter: $InterfaceAlias; current: $($previous -join ', '); website: $($desired -join ', '); different: $different"
+    Write-Log "Provider: $Provider; adapter: $InterfaceAlias; current: $($previous -join ', '); source: $($desired -join ', '); different: $different"
     if ($CheckOnly) { return }
 
     # Register encryption before assigning new server IPs. No plaintext fallback.
     foreach ($ip in $desired) {
         $entry = @(Get-DnsClientDohServerAddress | Where-Object ServerAddress -eq $ip)
         if ($entry.Count -eq 0) {
-            Add-DnsClientDohServerAddress -ServerAddress $ip -DohTemplate $comssDohUrl -AutoUpgrade $true -AllowFallbackToUdp $false | Out-Null
-        } elseif ($entry[0].DohTemplate -ne $comssDohUrl -or -not $entry[0].AutoUpgrade -or $entry[0].AllowFallbackToUdp) {
-            Set-DnsClientDohServerAddress -ServerAddress $ip -DohTemplate $comssDohUrl -AutoUpgrade $true -AllowFallbackToUdp $false | Out-Null
+            Add-DnsClientDohServerAddress -ServerAddress $ip -DohTemplate $template -AutoUpgrade $true -AllowFallbackToUdp $false | Out-Null
+        } elseif ($entry[0].DohTemplate -ne $template -or -not $entry[0].AutoUpgrade -or $entry[0].AllowFallbackToUdp) {
+            Set-DnsClientDohServerAddress -ServerAddress $ip -DohTemplate $template -AutoUpgrade $true -AllowFallbackToUdp $false | Out-Null
         }
     }
     if ($different) {

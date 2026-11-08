@@ -16,7 +16,7 @@ $actions = @{
     4 = @('Switch-GeoHideDns.ps1', '-Choice', '4')
     5 = @('Switch-GeoHideDns.ps1', '-Choice', '1')
     6 = @('Switch-GeoHideDns.ps1', '-Choice', '2')
-    7 = @('Install-ComssDnsTask.ps1')
+    7 = @('Install-ComssDnsTask.ps1', '-ChooseProvider')
     8 = @('Install-ComssDnsTask.ps1', '-Disable')
 }
 
@@ -56,7 +56,7 @@ while ($true) {
     Write-Host '4. Подключить Comss'
     Write-Host '5. Подключить GeoHide'
     Write-Host '6. Восстановить прежние настройки DNS'
-    Write-Host '7. Включить автообновление Comss'
+    Write-Host '7. Включить автообновление (Comss или GeoHide)'
     Write-Host '8. Отключить автообновление'
     Write-Host '0. Выход'
     $selection = Read-Host 'Выберите пункт'

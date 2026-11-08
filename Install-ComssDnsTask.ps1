@@ -3,27 +3,37 @@
 [CmdletBinding()]
 param(
     [string]$InterfaceAlias = 'Ethernet',
+    [ValidateSet('Comss','GeoHide')][string]$Provider = 'Comss',
+    [switch]$ChooseProvider,
     [switch]$Uninstall,
     [switch]$Disable
 )
 $ErrorActionPreference = 'Stop'
-$taskName = 'Comss DNS - every 2 hours'
+. (Join-Path $PSScriptRoot 'Get-ComssDns.ps1')
+if ($ChooseProvider) {
+    Write-Host '1. Comss'
+    Write-Host '2. GeoHide EU'
+    $choice = Read-Host 'DNS provider (1 or 2)'
+    if ($choice -notin '1', '2') { return }
+    if ($choice -eq '2') { $Provider = 'GeoHide' }
+    else { $Provider = 'Comss' }
+}
+$taskName = $dnsTaskNames[$Provider]
+$tasks = @(Get-DnsAutoUpdateTasks)
 if ($Uninstall -or $Disable) {
-    $task = Get-ScheduledTask -TaskPath '\' | Where-Object TaskName -eq $taskName
-    if (-not $task) {
-        Write-Host "Task absent: $taskName"
-    } elseif ($Uninstall) {
-        $task | Unregister-ScheduledTask -Confirm:$false
-        Write-Host "Task removed: $taskName"
+    if ($Uninstall) {
+        $tasks | Where-Object TaskName -eq $taskName | Unregister-ScheduledTask -Confirm:$false
     } else {
-        $task | Disable-ScheduledTask | Out-Null
-        Write-Host "Task disabled: $taskName"
+        $tasks | Where-Object { $_.Settings.Enabled } | Disable-ScheduledTask | Out-Null
+        Write-Host 'DNS auto-update is disabled.'
     }
     return
 }
+$otherTask = $tasks | Where-Object { $_.TaskName -ne $taskName -and $_.Settings.Enabled }
+if ($tasks.State -contains 'Running') { throw 'An update is running. Try again once it finishes.' }
 $adapter = Get-NetAdapter -Name $InterfaceAlias
 if (@($adapter).Count -ne 1 -or $adapter.Name -ne $InterfaceAlias) { throw 'Specify one exact adapter name.' }
-$destination = Join-Path $env:ProgramFiles 'ComssDnsUpdater'
+$destination = Join-Path $env:ProgramFiles "${Provider}DnsUpdater"
 New-Item -ItemType Directory -Path $destination -Force | Out-Null
 # Only administrators and SYSTEM can modify code executed by SYSTEM.
 $acl = New-Object System.Security.AccessControl.DirectorySecurity
@@ -39,7 +49,7 @@ foreach ($file in @('Get-ComssDns.ps1', 'Update-ComssDns.ps1')) {
 }
 # Store the adapter name in a generated entrypoint instead of shell interpolation.
 $escapedAlias = $InterfaceAlias.Replace("'", "''")
-$entry = "& (Join-Path `$PSScriptRoot 'Update-ComssDns.ps1') -InterfaceAlias '$escapedAlias'"
+$entry = "& (Join-Path `$PSScriptRoot 'Update-ComssDns.ps1') -InterfaceAlias '$escapedAlias' -Provider '$Provider'"
 $entryPath = Join-Path $destination 'Run.ps1'
 Set-Content -LiteralPath $entryPath -Value $entry -Encoding UTF8
 $exe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
@@ -48,6 +58,12 @@ $action = New-ScheduledTaskAction -Execute $exe -Argument ('-NoProfile -NonInter
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Hours 2)
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'Sync Ethernet IPv4 DNS with Comss every two hours, using DoH.' -Force | Out-Null
+if ($otherTask) { $otherTask | Disable-ScheduledTask | Out-Null }
+try {
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description "Sync IPv4 DNS with $Provider every two hours, using DoH." -Force | Out-Null
+} catch {
+    if ($otherTask) { $otherTask | Enable-ScheduledTask | Out-Null }
+    throw
+}
 Write-Host "Installed: $taskName. First check in one minute, then every two hours."
 Write-Host "Log: $destination\comss-dns.log"

@@ -143,26 +143,28 @@ try {
     Add-Result fail 'DNS-клиент Windows' $_.Exception.Message
 }
 
-$taskName = 'Comss DNS - every 2 hours'
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-try {
-    $task = Get-ScheduledTask -TaskName $taskName
+foreach ($provider in 'Comss', 'GeoHide') {
+  $name = "Автообновление $provider"
+  try {
+    $task = Get-ScheduledTask -TaskName $dnsTaskNames[$provider]
     $info = Get-ScheduledTaskInfo -InputObject $task
     $detail = "Состояние $($task.State). Последний запуск — $($info.LastRunTime). Код — $('0x{0:X8}' -f $info.LastTaskResult). Следующий запуск — $($info.NextRunTime)."
-    $taskLog = Join-Path $env:ProgramFiles 'ComssDnsUpdater\comss-dns.log'
+    $taskLog = Join-Path $env:ProgramFiles "${provider}DnsUpdater\comss-dns.log"
     if (Test-Path -LiteralPath $taskLog) {
         $detail += "`n`nПоследние строки журнала`n$((Get-Content -LiteralPath $taskLog -Tail 5) -join "`n")"
     }
     $status = if ($task.State -eq 'Disabled' -or $info.LastTaskResult -ne 0) { 'warn' } else { 'ok' }
-    Add-Result $status 'Задание Windows' $detail
-} catch {
+    Add-Result $status $name $detail
+  } catch {
     if ($isAdmin) {
-        Add-Result fail 'Задание Windows' $_.Exception.Message
+        Add-Result skip $name $_.Exception.Message
     } else {
-        Add-Result skip 'Задание Windows' 'Из обычного сеанса статус недоступен. Для проверки запустите этот отчёт от имени администратора.'
+        Add-Result skip $name 'Из обычного сеанса статус недоступен. Для проверки запустите этот отчёт от имени администратора.'
     }
+  }
 }
 
 $cards = for ($index = 0; $index -lt $results.Count; $index++) {

@@ -3,11 +3,17 @@ function Measure-DnsProviders {
 
     $localAddresses = @((Get-NetIPAddress -InterfaceIndex $Adapter.ifIndex -AddressFamily IPv4).IPAddress)
     $sites = @('https://example.com/', 'https://store.steampowered.com/', 'https://chatgpt.com/')
-    $providers = @([pscustomobject]@{
-        Name = 'GeoHide EU'
-        Template = 'https://eu.geohide.ru/dns-query'
-        Addresses = @('5.175.161.3', '37.221.93.141')
-    })
+    $providers = @()
+    try {
+        $dns = Get-DnsClientServerAddress -InterfaceIndex $Adapter.ifIndex -AddressFamily IPv4
+        $providers += [pscustomobject]@{
+            Name = 'GeoHide EU'
+            Template = $geoHideDohUrl
+            Addresses = @(Get-GeoHideDnsAddresses -Preferred $dns.ServerAddresses)
+        }
+    } catch {
+        Write-Host "GeoHide unavailable: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
     try {
         $page = Get-ComssDnsPage
         $providers += [pscustomobject]@{
