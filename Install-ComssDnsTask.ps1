@@ -3,14 +3,22 @@
 [CmdletBinding()]
 param(
     [string]$InterfaceAlias = 'Ethernet',
-    [switch]$Uninstall
+    [switch]$Uninstall,
+    [switch]$Disable
 )
 $ErrorActionPreference = 'Stop'
 $taskName = 'Comss DNS - every 2 hours'
-if ($Uninstall) {
+if ($Uninstall -or $Disable) {
     $task = Get-ScheduledTask -TaskPath '\' | Where-Object TaskName -eq $taskName
-    if ($task) { $task | Unregister-ScheduledTask -Confirm:$false }
-    Write-Host "Task absent: $taskName"
+    if (-not $task) {
+        Write-Host "Task absent: $taskName"
+    } elseif ($Uninstall) {
+        $task | Unregister-ScheduledTask -Confirm:$false
+        Write-Host "Task removed: $taskName"
+    } else {
+        $task | Disable-ScheduledTask | Out-Null
+        Write-Host "Task disabled: $taskName"
+    }
     return
 }
 $adapter = Get-NetAdapter -Name $InterfaceAlias

@@ -3,7 +3,7 @@
 param(
     [string]$InterfaceAlias = 'Ethernet',
     [switch]$CheckOnly,
-    [ValidateSet('1', '2', '3')][string]$Choice
+    [ValidateSet('1', '2', '3', '4')][string]$Choice
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,17 +11,17 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Measure-DnsProviders.ps1')
 $backupPath = Join-Path $PSScriptRoot 'geohide-dns-backup.json'
 $template = 'https://eu.geohide.ru/dns-query'
-$geoAddresses = @('5.175.161.3', '37.221.93.141')
+$addresses = @('5.175.161.3', '37.221.93.141')
 $taskName = 'Comss DNS - every 2 hours'
 
-function Set-EthernetDns([string[]]$Addresses) {
+function Set-AdapterDns([string[]]$Addresses) {
     $dns | Set-DnsClientServerAddress -ServerAddresses $Addresses
     $actual = (Get-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4).ServerAddresses
     if (($actual -join ',') -ne ($Addresses -join ',')) {
         throw 'Windows did not report the expected IPv4 DNS addresses.'
     }
     Clear-DnsClientCache
-    Write-Host "Ethernet DNS: $($actual -join ', ')"
+    Write-Host "$($adapter.Name) DNS: $($actual -join ', ')"
 }
 
 try {
@@ -44,34 +44,57 @@ try {
         Write-Host '1. Switch to GeoHide EU (DoH)'
         Write-Host '2. Restore previous DNS and Comss task'
         Write-Host '3. Test Comss and GeoHide EU and apply the winner'
-        $selection = Read-Host 'Choose 1, 2 or 3'
-        if ($selection -notin '1', '2', '3') { return }
+        Write-Host '4. Connect to Comss'
+        $selection = Read-Host 'Choose 1, 2, 3 or 4'
+        if ($selection -notin '1', '2', '3', '4') { return }
         $Choice = $selection
     }
-    if ($choice -notin '1', '2', '3') { return }
+    $switchLock = [Threading.Mutex]::new($false, 'Local\AutoDnsWindows-ProviderSwitch')
+    try { $locked = $switchLock.WaitOne(0) }
+    catch [Threading.AbandonedMutexException] { $locked = $true }
+    if (-not $locked) { throw 'Another DNS switch is already running.' }
+
     $dns = Get-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4
-    $task = Get-ScheduledTask -TaskPath '\' | Where-Object TaskName -eq $taskName
     $key = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($adapter.InterfaceGuid)"
+    $hasBackup = Test-Path -LiteralPath $backupPath
+    $addedDoh = @()
+    if ($hasBackup) {
+        $backup = Get-Content -LiteralPath $backupPath -Raw | ConvertFrom-Json
+        if ($backup.InterfaceGuid -ne [string]$adapter.InterfaceGuid) {
+            throw 'The saved DNS setup belongs to another adapter.'
+        }
+        $addedDoh = @($backup.AddedDohEntries | Where-Object { $_ })
+        foreach ($ip in $backup.AddedDoh) {
+            $addedDoh += [pscustomobject]@{ Address = $ip; Template = $backup.DohTemplate }
+        }
+    }
 
     if ($choice -ne '2') {
-        if (Test-Path -LiteralPath $backupPath) {
-            throw 'A backup already exists. Choose 2 to restore it before switching again.'
-        }
         if ($choice -eq '3') {
             $winner = Measure-DnsProviders -Adapter $adapter |
                 Sort-Object @{Expression='Score';Descending=$true}, AverageSeconds | Select-Object -First 1
             if (-not $winner) { throw 'No provider passed. DNS settings were not changed.' }
-            $geoAddresses = $winner.Addresses
+            $addresses = $winner.Addresses
             $template = $winner.Template
             Write-Host "Selected $($winner.Name): $($winner.Score) of 4 site checks passed."
+        } elseif ($choice -eq '4') {
+            $page = Get-ComssDnsPage
+            $addresses = @(Get-ComssDnsFromHtml -Html $page.Content)
+            $template = $comssDohUrl
         }
         $task = Get-ScheduledTask -TaskPath '\' | Where-Object TaskName -eq $taskName
         if ($task.State -eq 'Running') { throw 'Comss is updating now. Try again once it finishes.' }
-        $configured = (Get-ItemProperty -LiteralPath $key).NameServer
-        $staticAddresses = @(([string]$configured -split '[,\s]+') | Where-Object { $_ })
+        if (-not $hasBackup) {
+            $configured = (Get-ItemProperty -LiteralPath $key).NameServer
+            $backup = [pscustomobject]@{
+                InterfaceGuid = [string]$adapter.InterfaceGuid
+                Addresses = @(([string]$configured -split '[,\s]+') | Where-Object { $_ })
+                TaskEnabled = [bool]($task -and $task.Settings.Enabled)
+            }
+        }
         $entries = @(Get-DnsClientDohServerAddress)
         $newEntries = @()
-        foreach ($ip in $geoAddresses) {
+        foreach ($ip in $addresses) {
             $entry = $entries | Where-Object ServerAddress -eq $ip
             if (-not $entry) {
                 $newEntries += $ip
@@ -80,29 +103,32 @@ try {
             }
         }
 
-        $backup = [pscustomobject]@{
-            InterfaceGuid = [string]$adapter.InterfaceGuid
-            Addresses = $staticAddresses
-            TaskEnabled = [bool]($task -and $task.Settings.Enabled)
-            AddedDoh = $newEntries
-            DohTemplate = $template
+        if (-not $hasBackup -or $newEntries.Count) {
+            $addedDoh = @($addedDoh | Where-Object Address -notin $newEntries)
+            foreach ($ip in $newEntries) {
+                $addedDoh += [pscustomobject]@{ Address = $ip; Template = $template }
+            }
+            $savedState = [pscustomobject]@{
+                InterfaceGuid = $backup.InterfaceGuid
+                Addresses = $backup.Addresses
+                TaskEnabled = $backup.TaskEnabled
+                AddedDohEntries = $addedDoh
+            }
+            $pendingBackup = "$backupPath.tmp"
+            $savedState | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $pendingBackup -Encoding UTF8
+            if ($hasBackup) { [IO.File]::Replace($pendingBackup, $backupPath, [NullString]::Value) }
+            else { [IO.File]::Move($pendingBackup, $backupPath) }
         }
-        New-Item -ItemType File -Path $backupPath -ErrorAction Stop | Out-Null
-        $backup | ConvertTo-Json | Set-Content -LiteralPath $backupPath -Encoding UTF8
-        if ($backup.TaskEnabled) { $task | Disable-ScheduledTask | Out-Null }
+        if ($task.Settings.Enabled) { $task | Disable-ScheduledTask | Out-Null }
         foreach ($ip in $newEntries) {
             Add-DnsClientDohServerAddress -ServerAddress $ip -DohTemplate $template -AutoUpgrade $true -AllowFallbackToUdp $false
         }
-        Set-EthernetDns $geoAddresses
-        Write-Host 'DNS applied. Choose 2 to restore the previous setup.'
+        Set-AdapterDns $addresses
+        Write-Host 'DNS applied. Use Restore in the menu to undo the changes.'
     } else {
-        if (-not (Test-Path -LiteralPath $backupPath)) { throw 'There is no saved DNS setup to restore.' }
-        $backup = Get-Content -LiteralPath $backupPath -Raw | ConvertFrom-Json
-        if ($backup.InterfaceGuid -ne [string]$adapter.InterfaceGuid) {
-            throw 'The saved DNS setup does not match this Ethernet adapter.'
-        }
+        if (-not $hasBackup) { throw 'There is no saved DNS setup to restore.' }
         if ($backup.Addresses) {
-            Set-EthernetDns $backup.Addresses
+            Set-AdapterDns $backup.Addresses
         } else {
             netsh.exe interface ipv4 set dnsservers "name=$($adapter.ifIndex)" source=dhcp
             if ($LASTEXITCODE -ne 0 -or (Get-ItemProperty -LiteralPath $key).NameServer) {
@@ -111,25 +137,28 @@ try {
             Clear-DnsClientCache
         }
         $entries = @(Get-DnsClientDohServerAddress)
-        foreach ($ip in $backup.AddedDoh) {
-            $entry = $entries | Where-Object ServerAddress -eq $ip
-            if ($entry.DohTemplate -eq $backup.DohTemplate -and $entry.AutoUpgrade -and -not $entry.AllowFallbackToUdp) {
-                Remove-DnsClientDohServerAddress -ServerAddress $ip
+        foreach ($registration in $addedDoh) {
+            $entry = $entries | Where-Object ServerAddress -eq $registration.Address
+            if ($entry.DohTemplate -eq $registration.Template -and $entry.AutoUpgrade -and -not $entry.AllowFallbackToUdp) {
+                Remove-DnsClientDohServerAddress -ServerAddress $registration.Address
             }
         }
         if ($backup.TaskEnabled) {
+            $task = Get-ScheduledTask -TaskPath '\' | Where-Object TaskName -eq $taskName
             if (-not $task) { throw 'DNS restored, but the saved Comss task is missing.' }
             $task | Enable-ScheduledTask | Out-Null
         }
         Remove-Item -LiteralPath $backupPath
-        Write-Host 'Previous Ethernet DNS and Comss task state restored.'
+        Write-Host 'Previous DNS and Comss task state restored.'
     }
 } catch {
     Write-Host $_.Exception.Message -ForegroundColor Red
     if (Test-Path -LiteralPath $backupPath) {
-        Write-Host 'Backup available. Choose 2 to restore the previous setup.'
+        Write-Host 'Backup available. Use Restore in the menu to undo the changes.'
     }
     exit 1
 } finally {
+    if ($locked) { $switchLock.ReleaseMutex() }
+    if ($switchLock) { $switchLock.Dispose() }
     if ($interactive) { [void](Read-Host 'Press Enter to close') }
 }

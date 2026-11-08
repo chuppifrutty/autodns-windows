@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [string]$InterfaceAlias = 'Ethernet',
-    [ValidateRange(0, 9)][int]$Action = 0
+    [ValidateRange(0, 8)][int]$Action = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -13,12 +13,11 @@ $actions = @{
     1 = @('Check-ComssDns.ps1', '-OpenReport')
     2 = @('Switch-GeoHideDns.ps1', '-CheckOnly')
     3 = @('Switch-GeoHideDns.ps1', '-Choice', '3')
-    4 = @('Update-ComssDns.ps1')
+    4 = @('Switch-GeoHideDns.ps1', '-Choice', '4')
     5 = @('Switch-GeoHideDns.ps1', '-Choice', '1')
     6 = @('Switch-GeoHideDns.ps1', '-Choice', '2')
     7 = @('Install-ComssDnsTask.ps1')
-    8 = @('Install-ComssDnsTask.ps1', '-Uninstall')
-    9 = @('Check-ComssDns.ps1', '-OpenReport')
+    8 = @('Install-ComssDnsTask.ps1', '-Disable')
 }
 
 function Invoke-MenuAction([int]$Selection) {
@@ -54,18 +53,17 @@ while ($true) {
     Write-Host '1. Открыть отчёт диагностики'
     Write-Host '2. Сравнить Comss и GeoHide без изменения DNS'
     Write-Host '3. Сравнить и применить лучший DNS'
-    Write-Host '4. Обновить Comss вручную'
-    Write-Host '5. Переключиться на GeoHide вручную'
+    Write-Host '4. Подключить Comss'
+    Write-Host '5. Подключить GeoHide'
     Write-Host '6. Восстановить прежние настройки DNS'
     Write-Host '7. Включить автообновление Comss'
-    Write-Host '8. Удалить задание автообновления Comss'
-    Write-Host '9. Открыть отчёт со статусом задания Comss'
+    Write-Host '8. Отключить автообновление'
     Write-Host '0. Выход'
     $selection = Read-Host 'Выберите пункт'
     if ($null -eq $selection) { break }
     $selection = $selection.Trim()
     if ($selection -eq '0') { break }
-    if ($selection -notmatch '^[1-9]$') { continue }
+    if ($selection -notmatch '^[1-8]$') { continue }
 
     try {
         $code = Invoke-MenuAction ([int]$selection)
