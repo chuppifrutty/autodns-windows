@@ -2,7 +2,8 @@
 [CmdletBinding()]
 param(
     [string]$InterfaceAlias = 'Ethernet',
-    [switch]$CheckOnly
+    [switch]$CheckOnly,
+    [ValidateSet('1', '2', '3')][string]$Choice
 )
 
 $ErrorActionPreference = 'Stop'
@@ -38,10 +39,15 @@ try {
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         throw 'Run the CMD launcher or use -CheckOnly.'
     }
-    Write-Host '1. Switch to GeoHide EU (DoH)'
-    Write-Host '2. Restore previous DNS and Comss task'
-    Write-Host '3. Test Comss and GeoHide EU and apply the winner'
-    $choice = Read-Host 'Choose 1, 2 or 3'
+    $interactive = -not $Choice
+    if ($interactive) {
+        Write-Host '1. Switch to GeoHide EU (DoH)'
+        Write-Host '2. Restore previous DNS and Comss task'
+        Write-Host '3. Test Comss and GeoHide EU and apply the winner'
+        $selection = Read-Host 'Choose 1, 2 or 3'
+        if ($selection -notin '1', '2', '3') { return }
+        $Choice = $selection
+    }
     if ($choice -notin '1', '2', '3') { return }
     $dns = Get-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4
     $task = Get-ScheduledTask -TaskPath '\' | Where-Object TaskName -eq $taskName
@@ -125,5 +131,5 @@ try {
     }
     exit 1
 } finally {
-    if (-not $CheckOnly) { [void](Read-Host 'Press Enter to close') }
+    if ($interactive) { [void](Read-Host 'Press Enter to close') }
 }

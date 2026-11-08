@@ -1,11 +1,20 @@
 #requires -Version 5.1
 #requires -RunAsAdministrator
 [CmdletBinding()]
-param([string]$InterfaceAlias = 'Ethernet')
+param(
+    [string]$InterfaceAlias = 'Ethernet',
+    [switch]$Uninstall
+)
 $ErrorActionPreference = 'Stop'
+$taskName = 'Comss DNS - every 2 hours'
+if ($Uninstall) {
+    $task = Get-ScheduledTask -TaskPath '\' | Where-Object TaskName -eq $taskName
+    if ($task) { $task | Unregister-ScheduledTask -Confirm:$false }
+    Write-Host "Task absent: $taskName"
+    return
+}
 $adapter = Get-NetAdapter -Name $InterfaceAlias
 if (@($adapter).Count -ne 1 -or $adapter.Name -ne $InterfaceAlias) { throw 'Specify one exact adapter name.' }
-$taskName = 'Comss DNS - every 2 hours'
 $destination = Join-Path $env:ProgramFiles 'ComssDnsUpdater'
 New-Item -ItemType Directory -Path $destination -Force | Out-Null
 # Only administrators and SYSTEM can modify code executed by SYSTEM.
