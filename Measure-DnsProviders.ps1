@@ -29,6 +29,7 @@ function Measure-DnsProviders {
     $PSNativeCommandUseErrorActionPreference = $false
     foreach ($provider in $providers) {
         $baseline = 0
+        $passedSiteChecks = 0
         $score = 0
         $times = @()
         $dohHost = ([uri]$provider.Template).DnsSafeHost
@@ -41,6 +42,7 @@ function Measure-DnsProviders {
             }
             foreach ($site in $sites) {
                 $attempts = if ($site -eq $sites[0]) { 1 } else { 2 }
+                $sitePassed = $false
                 foreach ($attempt in 1..$attempts) {
                     $result = curl.exe -q --silent --ipv4 --noproxy '*' --max-time 8 --output NUL `
                         --doh-url $provider.Template --resolve "${dohHost}:443:$ip" `
@@ -52,17 +54,22 @@ function Measure-DnsProviders {
                     if ($site -eq $sites[0]) {
                         $baseline++
                     } else {
+                        $sitePassed = $true
                         $score++
                         $times += [double]::Parse($Matches[3], [Globalization.CultureInfo]::InvariantCulture)
                     }
                 }
+                if ($sitePassed) { $passedSiteChecks++ }
             }
         }
-        if ($baseline -eq $provider.Addresses.Count -and $score -gt 0) {
+        if ($baseline -eq $provider.Addresses.Count -and
+            $passedSiteChecks -eq $provider.Addresses.Count * ($sites.Count - 1)) {
             $provider | Add-Member NoteProperty Score $score
             $provider | Add-Member NoteProperty MaxScore ($provider.Addresses.Count * ($sites.Count - 1) * 2)
             $provider | Add-Member NoteProperty AverageSeconds (($times | Measure-Object -Average).Average)
             $provider
+        } else {
+            Write-Host "$($provider.Name) skipped: each DNS must reach the control site, Steam and ChatGPT."
         }
     }
 }

@@ -76,6 +76,17 @@ try {
     Add-Result fail "Адаптер $InterfaceAlias" $_.Exception.Message
 }
 
+try {
+    $proxy = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+    if ($proxy.ProxyEnable -or $proxy.AutoConfigURL) {
+        Add-Result warn 'Прокси Windows' 'Включён ручной прокси или задан сценарий настройки. Браузер может использовать прокси. Проверки HTTPS к Steam и ChatGPT выполняются с отключённым прокси curl.'
+    } else {
+        Add-Result ok 'Прокси Windows' 'Ручной прокси и адрес сценария настройки не заданы.'
+    }
+} catch {
+    Add-Result skip 'Прокси Windows' $_.Exception.Message
+}
+
 $desired = @()
 try {
     $page = Get-ComssDnsPage
