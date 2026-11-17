@@ -26,17 +26,17 @@ function Get-RouteName([string]$IP) {
     return 'не найден'
 }
 
-function Test-Doh([string]$IP) {
+function Test-Doh([string]$IP, [string]$Template) {
     $body = New-TemporaryFile
     try {
-        $dohHost = ([uri]$comssDohUrl).DnsSafeHost
+        $dohHost = ([uri]$Template).DnsSafeHost
         # Wire-format DNS query for example.com, type A, with transaction ID 0.
         $query = 'AAABAAABAAAAAAAAB2V4YW1wbGUDY29tAAABAAE'
         $ErrorActionPreference = 'Continue'
         $PSNativeCommandUseErrorActionPreference = $false
         $output = curl.exe -q --silent --show-error --noproxy '*' --resolve "${dohHost}:443:$IP" `
             --max-time 10 --header 'Accept: application/dns-message' --output $body.FullName `
-            --write-out '%{http_code} %{content_type}' "${comssDohUrl}?dns=$query" 2>&1
+            --write-out '%{http_code} %{content_type}' "${Template}?dns=$query" 2>&1
         $curlExit = $LASTEXITCODE
         $ErrorActionPreference = 'Stop'
         if ($curlExit -ne 0) { throw "curl ($curlExit) — $($output -join ' ')" }
@@ -82,13 +82,13 @@ try {
     Add-Result ok 'Сайт Comss' "HTTP $($page.StatusCode) — $comssSourceUrl"
     try {
         $desired = @(Get-ComssDnsFromHtml -Html $page.Content)
-        Add-Result ok 'Адреса на сайте' ($desired -join ', ')
+        Add-Result ok 'Адреса Comss' ($desired -join ', ')
     } catch {
-        Add-Result fail 'Адреса на сайте' $_.Exception.Message
+        Add-Result fail 'Адреса Comss' $_.Exception.Message
     }
 } catch {
     Add-Result fail 'Сайт Comss' $_.Exception.Message
-    Add-Result skip 'Адреса на сайте' 'Страница Comss недоступна.'
+    Add-Result skip 'Адреса Comss' 'Страница Comss недоступна.'
 }
 
 if (-not $adapterRead -or $desired.Count -eq 0) {
@@ -96,10 +96,10 @@ if (-not $adapterRead -or $desired.Count -eq 0) {
 } elseif (($current -join ',') -eq ($desired -join ',')) {
     Add-Result ok 'Сравнение DNS' 'На адаптере указаны оба актуальных адреса в нужном порядке.'
 } else {
-    Add-Result warn 'Сравнение DNS' "На $InterfaceAlias — $currentText.`nНа сайте Comss — $($desired -join ', ')."
+    Add-Result warn 'Сравнение DNS' "На $InterfaceAlias — $currentText.`nАктуальные адреса Comss — $($desired -join ', ')."
 }
 
-$probeIPs = if ($desired.Count) { $desired } else { $current }
+$probeIPs = @(($current + $desired) | Select-Object -Unique)
 if ($probeIPs) {
     try {
         $dohEntries = @(Get-DnsClientDohServerAddress)
@@ -108,14 +108,22 @@ if ($probeIPs) {
         $dohEntries = $null
     }
     foreach ($ip in $probeIPs) {
-        if ($null -ne $dohEntries) {
-            $entry = $dohEntries | Where-Object ServerAddress -eq $ip | Select-Object -First 1
+        $template = $comssDohUrl
+        $entry = $dohEntries | Where-Object ServerAddress -eq $ip | Select-Object -First 1
+        if ($ip -notin $desired) {
+            if ($entry.DohTemplate -notin @($comssDohUrl, $geoHideDohUrl)) {
+                Add-Result skip "Ответ DoH · $ip" 'Для текущего DNS не найден известный шаблон Comss или GeoHide.'
+                continue
+            }
+            $template = $entry.DohTemplate
+        }
+        if ($null -ne $dohEntries -and $ip -in $current) {
             if (-not $entry) {
                 Add-Result warn "Настройки DoH · $ip" 'Для этого IP нет записи DoH в Windows.'
-            } elseif ($entry.DohTemplate -ne $comssDohUrl -or -not $entry.AutoUpgrade -or $entry.AllowFallbackToUdp) {
+            } elseif ($entry.DohTemplate -ne $template -or -not $entry.AutoUpgrade -or $entry.AllowFallbackToUdp) {
                 Add-Result warn "Настройки DoH · $ip" "Шаблон — $($entry.DohTemplate).`nАвтопереход на DoH — $($entry.AutoUpgrade). Разрешён обычный DNS — $($entry.AllowFallbackToUdp)."
             } else {
-                Add-Result ok "Настройки DoH · $ip" 'Шаблон Comss совпадает. Автопереход на DoH включён, обычный DNS отключён.'
+                Add-Result ok "Настройки DoH · $ip" "Шаблон — $template. Автопереход на DoH включён, обычный DNS отключён."
             }
         }
         $route = Get-RouteName $ip
@@ -124,7 +132,7 @@ if ($probeIPs) {
             $routeDetail += " Проверка по $InterfaceAlias отдельно не выполнена."
         }
         try {
-            $answer = Test-Doh $ip
+            $answer = Test-Doh $ip $template
             Add-Result ok "Ответ DoH · $ip" "$answer`n$routeDetail"
         } catch {
             Add-Result fail "Ответ DoH · $ip" "$($_.Exception.Message)`n$routeDetail"
@@ -141,6 +149,38 @@ try {
     Add-Result ok 'DNS-клиент Windows' "example.com — $($answers.IPAddress -join ', ').`nКакой сервер выбрала Windows, этот запрос не показывает."
 } catch {
     Add-Result fail 'DNS-клиент Windows' $_.Exception.Message
+}
+
+foreach ($domain in 'store.steampowered.com', 'chatgpt.com') {
+    try {
+        $ips = @(Resolve-DnsName -Name $domain -Type A -DnsOnly -NoHostsFile -QuickTimeout |
+            Where-Object { $_.Section -eq 'Answer' -and $_.Type -eq 'A' } |
+            Select-Object -ExpandProperty IPAddress -Unique)
+        if (-not $ips.Count) { throw "Windows не вернула IPv4 для $domain." }
+        Add-Result ok "DNS Windows · $domain" ($ips -join ', ')
+    } catch {
+        Add-Result fail "DNS Windows · $domain" $_.Exception.Message
+        continue
+    }
+    foreach ($ip in $ips) {
+        $name = "HTTPS · $domain · $ip"
+        $route = Get-RouteName $ip
+        if (-not $adapterRead -or $route -notlike "$InterfaceAlias (*)") {
+            Add-Result skip $name "Маршрут Windows — $route. Выбранный адаптер — $InterfaceAlias."
+            continue
+        }
+        $details = @()
+        $passed = 0
+        foreach ($attempt in 1..2) {
+            $metrics = curl.exe -q --silent --ipv4 --noproxy '*' --max-time 10 --output NUL `
+                --resolve "${domain}:443:$ip" --write-out 'HTTP %{http_code}, %{time_total}s' "https://$domain/"
+            $code = $LASTEXITCODE
+            $details += "Попытка $attempt — $metrics (curl $code)."
+            if ($code -eq 0 -and $metrics -match '^HTTP [23]\d\d,') { $passed++ }
+        }
+        $status = @('fail', 'warn', 'ok')[$passed]
+        Add-Result $status $name ($details -join "`n")
+    }
 }
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()

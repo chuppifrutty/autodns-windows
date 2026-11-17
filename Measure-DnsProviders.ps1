@@ -40,23 +40,27 @@ function Measure-DnsProviders {
                 continue
             }
             foreach ($site in $sites) {
-                $result = curl.exe -q --silent --ipv4 --noproxy '*' --max-time 8 --output NUL `
-                    --doh-url $provider.Template --resolve "${dohHost}:443:$ip" `
-                    --write-out '%{http_code} %{local_ip} %{time_total}' $site
-                $curlExit = $LASTEXITCODE
-                Write-Host "$($provider.Name) $ip $site : $result"
-                if ($curlExit -ne 0 -or $result -notmatch '^([23]\d\d) (\S+) (\d+\.\d+)$' -or
-                    $Matches[2] -notin $localAddresses) { continue }
-                if ($site -eq $sites[0]) {
-                    $baseline++
-                } else {
-                    $score++
-                    $times += [double]::Parse($Matches[3], [Globalization.CultureInfo]::InvariantCulture)
+                $attempts = if ($site -eq $sites[0]) { 1 } else { 2 }
+                foreach ($attempt in 1..$attempts) {
+                    $result = curl.exe -q --silent --ipv4 --noproxy '*' --max-time 8 --output NUL `
+                        --doh-url $provider.Template --resolve "${dohHost}:443:$ip" `
+                        --write-out '%{http_code} %{local_ip} %{time_total} %{remote_ip}' $site
+                    $curlExit = $LASTEXITCODE
+                    Write-Host "$($provider.Name) DNS=$ip $site [$attempt/$attempts] HTTP/local/seconds/remote: $result (curl $curlExit)"
+                    if ($curlExit -ne 0 -or $result -notmatch '^([23]\d\d) (\S+) (\d+\.\d+) (\S+)$' -or
+                        $Matches[2] -notin $localAddresses) { continue }
+                    if ($site -eq $sites[0]) {
+                        $baseline++
+                    } else {
+                        $score++
+                        $times += [double]::Parse($Matches[3], [Globalization.CultureInfo]::InvariantCulture)
+                    }
                 }
             }
         }
         if ($baseline -eq $provider.Addresses.Count -and $score -gt 0) {
             $provider | Add-Member NoteProperty Score $score
+            $provider | Add-Member NoteProperty MaxScore ($provider.Addresses.Count * ($sites.Count - 1) * 2)
             $provider | Add-Member NoteProperty AverageSeconds (($times | Measure-Object -Average).Average)
             $provider
         }

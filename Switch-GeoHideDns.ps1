@@ -29,7 +29,7 @@ try {
     if ($CheckOnly) {
         Measure-DnsProviders -Adapter $adapter |
             Sort-Object @{Expression='Score';Descending=$true}, AverageSeconds |
-            Format-Table Name,Score,AverageSeconds
+            Format-Table Name,Score,MaxScore,AverageSeconds
         return
     }
 
@@ -74,7 +74,7 @@ try {
             if (-not $winner) { throw 'No provider passed. DNS settings were not changed.' }
             $addresses = $winner.Addresses
             $template = $winner.Template
-            Write-Host "Selected $($winner.Name): $($winner.Score) of 4 site checks passed."
+            Write-Host "Selected $($winner.Name): $($winner.Score) of $($winner.MaxScore) site checks passed."
         } elseif ($choice -eq '4') {
             $page = Get-ComssDnsPage
             $addresses = @(Get-ComssDnsFromHtml -Html $page.Content)

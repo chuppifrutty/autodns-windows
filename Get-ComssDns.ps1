@@ -1,4 +1,4 @@
-$comssSourceUrl = 'https://www.comss.ru/page.php?id=7315'
+﻿$comssSourceUrl = 'https://www.comss.ru/page.php?id=7315'
 $comssDohUrl = 'https://dns.comss.one/dns-query'
 $geoHideDohUrl = 'https://eu.geohide.ru/dns-query'
 $dnsTaskNames = @{
@@ -21,11 +21,11 @@ function Test-PublicIpv4([string]$Address) {
         -not ($bytes[0] -eq 192 -and $bytes[1] -eq 168))
 }
 
-function Get-GeoHideDnsAddresses([string[]]$Preferred) {
-    $dohHost = ([uri]$geoHideDohUrl).DnsSafeHost
+function Get-WorkingDohAddresses([string]$Template, [string[]]$Preferred) {
+    $dohHost = ([uri]$Template).DnsSafeHost
     $records = Resolve-DnsName -Name $dohHost -Type A -DnsOnly -NoHostsFile -QuickTimeout
     $published = @($records | Where-Object { $_.Type -eq 'A' -and (Test-PublicIpv4 $_.IPAddress) } |
-        Select-Object -ExpandProperty IPAddress -Unique)
+        Select-Object -ExpandProperty IPAddress | Sort-Object -Unique)
     $candidates = @($Preferred + $published | Where-Object { $_ -in $published } | Select-Object -Unique -First 12)
     $selected = @()
     $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
@@ -38,7 +38,7 @@ function Get-GeoHideDnsAddresses([string[]]$Preferred) {
         foreach ($ip in $candidates) {
             $response = & $curl -q --silent --noproxy '*' --max-time 5 --max-filesize 65535 `
                 --resolve "${dohHost}:443:$ip" --header 'Accept: application/dns-message' `
-                --output $body.FullName --write-out '%{http_code} %{content_type}' "${geoHideDohUrl}?dns=$query"
+                --output $body.FullName --write-out '%{http_code} %{content_type}' "${Template}?dns=$query"
             if ($LASTEXITCODE -ne 0 -or $response -notmatch '^200 application/dns-message(?:\s*;.*)?$') { continue }
             $reply = [IO.File]::ReadAllBytes($body.FullName)
             if ($reply.Length -lt 12 -or $reply[0] -ne 0 -or $reply[1] -ne 0 -or
@@ -50,7 +50,11 @@ function Get-GeoHideDnsAddresses([string[]]$Preferred) {
     } finally {
         Remove-Item -LiteralPath $body.FullName
     }
-    throw 'GeoHide did not provide two working IPv4 DoH servers. Settings unchanged.'
+    throw 'Could not verify two IPv4 DoH servers for the published endpoint.'
+}
+
+function Get-GeoHideDnsAddresses([string[]]$Preferred) {
+    Get-WorkingDohAddresses -Template $geoHideDohUrl -Preferred $Preferred
 }
 
 function Get-ComssDnsPage {
@@ -64,7 +68,12 @@ function Get-ComssDnsFromHtml {
     param([Parameter(Mandatory)][string]$Html)
     $clean = [regex]::Replace($Html, '(?s)<!--.*?-->', '')
     $section = [regex]::Match($clean, '(?is)<div\b[^>]*\bid\s*=\s*["'']collapse2["''][^>]*>(.*?)</div>')
-    if (-not $section.Success) { throw 'Standard DNS section (collapse2) not found; settings unchanged.' }
+    if (-not $section.Success) {
+        if ($clean -notmatch '<pre>\s*https://dns\.comss\.one/dns-query\s*</pre>') {
+            throw 'Published Comss DoH endpoint not found.'
+        }
+        return Get-WorkingDohAddresses -Template $comssDohUrl -Preferred @()
+    }
     $labels = [regex]::Matches($section.Groups[1].Value, '(?is)<span\b[^>]*\bclass\s*=\s*["''][^"'']*\blabel\b[^"'']*["''][^>]*>\s*(\d{1,3}(?:\.\d{1,3}){3})\s*</span>')
     $addresses = @()
     foreach ($label in $labels) {
