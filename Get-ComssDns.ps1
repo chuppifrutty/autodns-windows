@@ -1,6 +1,7 @@
 ﻿$comssSourceUrl = 'https://www.comss.ru/page.php?id=7315'
 $comssDohUrl = 'https://dns.comss.one/dns-query'
 $geoHideDohUrl = 'https://eu.geohide.ru/dns-query'
+$perevalDohUrl = 'https://free.pereval.top/dns-query'
 $dnsTaskNames = @{
     Comss = 'Comss DNS - every 2 hours'
     GeoHide = 'GeoHide DNS - every 2 hours'

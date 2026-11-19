@@ -27,8 +27,10 @@ try {
     if ($adapter.Count -ne 1) { throw 'Specify one exact network adapter name.' }
     $adapter = $adapter[0]
     if ($CheckOnly) {
-        Measure-DnsProviders -Adapter $adapter |
-            Sort-Object @{Expression='Score';Descending=$true}, AverageSeconds |
+        $qualified = @(Measure-DnsProviders -Adapter $adapter)
+        if (-not $qualified.Count) { throw 'No provider passed the connectivity checks.' }
+        $qualified |
+            Sort-Object @{Expression='SuccessRate';Descending=$true}, AverageSeconds |
             Format-Table Name,Score,MaxScore,AverageSeconds
         return
     }
@@ -41,7 +43,7 @@ try {
     if ($interactive) {
         Write-Host '1. Switch to GeoHide EU (DoH)'
         Write-Host '2. Restore previous DNS and auto-update'
-        Write-Host '3. Test Comss and GeoHide EU and apply the winner'
+        Write-Host '3. Test DNS providers and apply the winner'
         Write-Host '4. Connect to Comss'
         $selection = Read-Host 'Choose 1, 2, 3 or 4'
         if ($selection -notin '1', '2', '3', '4') { return }
@@ -70,7 +72,7 @@ try {
     if ($choice -ne '2') {
         if ($choice -eq '3') {
             $winner = Measure-DnsProviders -Adapter $adapter |
-                Sort-Object @{Expression='Score';Descending=$true}, AverageSeconds | Select-Object -First 1
+                Sort-Object @{Expression='SuccessRate';Descending=$true}, AverageSeconds | Select-Object -First 1
             if (-not $winner) { throw 'No provider passed. DNS settings were not changed.' }
             $addresses = $winner.Addresses
             $template = $winner.Template

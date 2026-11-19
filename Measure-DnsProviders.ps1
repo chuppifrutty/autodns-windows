@@ -2,8 +2,12 @@ function Measure-DnsProviders {
     param([Parameter(Mandatory)]$Adapter)
 
     $localAddresses = @((Get-NetIPAddress -InterfaceIndex $Adapter.ifIndex -AddressFamily IPv4).IPAddress)
-    $sites = @('https://example.com/', 'https://store.steampowered.com/', 'https://chatgpt.com/')
-    $providers = @()
+    $sites = @('https://ya.ru/', 'https://store.steampowered.com/', 'https://chatgpt.com/')
+    $providers = @([pscustomobject]@{
+        Name = 'Pereval'
+        Template = $perevalDohUrl
+        Addresses = @('153.80.200.170')
+    })
     try {
         $dns = Get-DnsClientServerAddress -InterfaceIndex $Adapter.ifIndex -AddressFamily IPv4
         $providers += [pscustomobject]@{
@@ -65,7 +69,9 @@ function Measure-DnsProviders {
         if ($baseline -eq $provider.Addresses.Count -and
             $passedSiteChecks -eq $provider.Addresses.Count * ($sites.Count - 1)) {
             $provider | Add-Member NoteProperty Score $score
-            $provider | Add-Member NoteProperty MaxScore ($provider.Addresses.Count * ($sites.Count - 1) * 2)
+            $maxScore = $provider.Addresses.Count * ($sites.Count - 1) * 2
+            $provider | Add-Member NoteProperty MaxScore $maxScore
+            $provider | Add-Member NoteProperty SuccessRate ($score / $maxScore)
             $provider | Add-Member NoteProperty AverageSeconds (($times | Measure-Object -Average).Average)
             $provider
         } else {

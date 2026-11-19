@@ -51,7 +51,7 @@ while ($true) {
     Write-Host ""
     Write-Host "AutoDNS Windows · адаптер $InterfaceAlias" -ForegroundColor Cyan
     Write-Host '1. Открыть отчёт диагностики'
-    Write-Host '2. Сравнить Comss и GeoHide без изменения DNS'
+    Write-Host '2. Сравнить Comss, GeoHide и Перевал без изменения DNS'
     Write-Host '3. Сравнить и применить лучший DNS'
     Write-Host '4. Подключить Comss'
     Write-Host '5. Подключить GeoHide'

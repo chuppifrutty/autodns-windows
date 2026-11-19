@@ -122,8 +122,8 @@ if ($probeIPs) {
         $template = $comssDohUrl
         $entry = $dohEntries | Where-Object ServerAddress -eq $ip | Select-Object -First 1
         if ($ip -notin $desired) {
-            if ($entry.DohTemplate -notin @($comssDohUrl, $geoHideDohUrl)) {
-                Add-Result skip "Ответ DoH · $ip" 'Для текущего DNS не найден известный шаблон Comss или GeoHide.'
+            if ($entry.DohTemplate -notin @($comssDohUrl, $geoHideDohUrl, $perevalDohUrl)) {
+                Add-Result skip "Ответ DoH · $ip" 'Для текущего DNS не найден известный шаблон DoH.'
                 continue
             }
             $template = $entry.DohTemplate
